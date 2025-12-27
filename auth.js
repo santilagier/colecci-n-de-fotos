@@ -1,62 +1,81 @@
 /**
  * ==========================================
- * AUTHENTICATION MODULE
+ * AUTHENTICATION MODULE - SUPABASE
  * ==========================================
- * Handles user authentication with localStorage-based sessions.
- * Designed to be easily migrated to Firebase Auth or custom backend.
+ * Handles user authentication with Supabase Auth.
+ * Supports Google OAuth and Magic Link (email).
  */
-
-// ==========================================
-// CONSTANTS
-// ==========================================
-
-const AUTH_STORAGE_KEY = 'viajes-fran-auth';
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // ==========================================
 // STATE
 // ==========================================
 
 let currentUser = null;
+let authInitialized = false;
 
 // ==========================================
 // INITIALIZATION
 // ==========================================
 
 document.addEventListener('DOMContentLoaded', () => {
-    checkAuthState();
+    initializeAuth();
 });
 
-// ==========================================
-// AUTH STATE MANAGEMENT
-// ==========================================
-
 /**
- * Check if user is authenticated and show appropriate screen
+ * Initialize Supabase Auth and check current session
  */
-function checkAuthState() {
-    const userData = localStorage.getItem(AUTH_STORAGE_KEY);
-    
-    if (userData) {
-        try {
-            const user = JSON.parse(userData);
-            const now = Date.now();
-            
-            if (user.expiresAt && now < user.expiresAt) {
-                currentUser = user;
-                showApp();
-                return;
-            }
-            // Session expired
-            logout();
-        } catch (error) {
-            console.error('Error parsing auth data:', error);
-            logout();
-        }
+async function initializeAuth() {
+    // Wait for Supabase to be available
+    if (typeof window.supabaseClient === 'undefined') {
+        console.warn('Supabase not ready, retrying...');
+        setTimeout(initializeAuth, 100);
+        return;
     }
-    
-    showLogin();
+
+    const supabase = window.supabaseClient;
+
+    // Listen for auth state changes
+    supabase.auth.onAuthStateChange((event, session) => {
+        console.log('Auth state changed:', event);
+        
+        if (event === 'SIGNED_IN' && session) {
+            currentUser = session.user;
+            showApp();
+        } else if (event === 'SIGNED_OUT') {
+            currentUser = null;
+            showLogin();
+        } else if (event === 'TOKEN_REFRESHED' && session) {
+            currentUser = session.user;
+        }
+    });
+
+    // Check if there's an existing session
+    try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+            console.error('Error getting session:', error);
+            showLogin();
+            return;
+        }
+
+        if (session) {
+            currentUser = session.user;
+            showApp();
+        } else {
+            showLogin();
+        }
+    } catch (error) {
+        console.error('Error initializing auth:', error);
+        showLogin();
+    }
+
+    authInitialized = true;
 }
+
+// ==========================================
+// UI STATE MANAGEMENT
+// ==========================================
 
 /**
  * Show login screen, hide app
@@ -81,24 +100,8 @@ function showApp() {
     if (loginScreen) loginScreen.style.display = 'none';
     if (appContainer) appContainer.style.display = 'flex';
     
-    // Clean up old photos from previous sessions (without userId)
-    cleanupLegacyPhotos();
-    
     // Initialize app with delay to ensure scripts are loaded
     setTimeout(initializeAppIfReady, 100);
-}
-
-/**
- * Remove photos stored without userId (legacy format)
- */
-function cleanupLegacyPhotos() {
-    const oldKey = 'viajes-fran-photos';
-    const oldData = localStorage.getItem(oldKey);
-    
-    if (oldData && getCurrentUserId()) {
-        console.log('⚠️ Limpiando fotos antiguas (sin userId)...');
-        localStorage.removeItem(oldKey);
-    }
 }
 
 /**
@@ -153,7 +156,7 @@ function setupLoginListeners() {
 }
 
 /**
- * Handle magic link login
+ * Handle Magic Link login (email)
  */
 async function handleMagicLink() {
     const emailInput = document.getElementById('login-email');
@@ -168,26 +171,35 @@ async function handleMagicLink() {
         return;
     }
     
-    // Disable button and show loading state
+    // Disable button and show loading
     if (btn) {
         btn.disabled = true;
         btn.textContent = 'Enviando...';
     }
     
     try {
-        await simulateMagicLink(email);
+        const supabase = window.supabaseClient;
         
-        showLoginMessage('¡Magic link enviado! (Demo: sesión creada automáticamente)', 'success');
+        const { error } = await supabase.auth.signInWithOtp({
+            email: email,
+            options: {
+                // Redirect to current page after clicking magic link
+                emailRedirectTo: window.location.origin + window.location.pathname
+            }
+        });
         
-        // In production, user would click link in email
-        // For demo, create session after delay
-        setTimeout(() => {
-            createSession(email, 'magic-link');
-        }, 1500);
+        if (error) {
+            throw error;
+        }
+        
+        showLoginMessage('¡Magic link enviado! Revisa tu email (y la carpeta de spam)', 'success');
+        
+        // Reset button after delay
+        setTimeout(() => resetMagicLinkButton(btn), 3000);
         
     } catch (error) {
         console.error('Error sending magic link:', error);
-        showLoginMessage('Error al enviar magic link. Intenta de nuevo.', 'error');
+        showLoginMessage('Error: ' + (error.message || 'No se pudo enviar el email'), 'error');
         resetMagicLinkButton(btn);
     }
 }
@@ -209,24 +221,10 @@ function resetMagicLinkButton(btn) {
 }
 
 /**
- * Handle Google login
- * Uses the email from the input field if provided, otherwise prompts
+ * Handle Google OAuth login
  */
 async function handleGoogleLogin() {
     const btn = document.getElementById('google-login-btn');
-    const emailInput = document.getElementById('login-email');
-    
-    // Check if user already entered an email
-    let email = emailInput ? emailInput.value.trim() : '';
-    
-    // If no email entered, prompt for one (simulating Google returning an email)
-    if (!email) {
-        email = prompt('Simular Google OAuth:\nIngresa tu email para continuar:', 'usuario@gmail.com');
-        if (!email || !isValidEmail(email)) {
-            showLoginMessage('Por favor ingresa un email válido', 'error');
-            return;
-        }
-    }
     
     if (btn) {
         btn.disabled = true;
@@ -234,13 +232,25 @@ async function handleGoogleLogin() {
     }
     
     try {
-        // Simulate Google OAuth delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        createSession(email, 'google');
+        const supabase = window.supabaseClient;
+        
+        const { error } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+                redirectTo: window.location.origin + window.location.pathname
+            }
+        });
+        
+        if (error) {
+            throw error;
+        }
+        
+        // User will be redirected to Google, then back to the app
+        // Auth state change listener will handle the rest
         
     } catch (error) {
         console.error('Error with Google login:', error);
-        showLoginMessage('Error al iniciar sesión con Google. Intenta de nuevo.', 'error');
+        showLoginMessage('Error: ' + (error.message || 'No se pudo iniciar sesión con Google'), 'error');
         resetGoogleButton(btn);
     }
 }
@@ -264,89 +274,42 @@ function resetGoogleButton(btn) {
 }
 
 // ==========================================
-// AUTH SIMULATION (Replace with real implementation)
+// LOGOUT
 // ==========================================
 
 /**
- * Simulate magic link email send
- * @param {string} email - User email
- * @returns {Promise<{email: string, sent: boolean}>}
+ * Logout user
  */
-async function simulateMagicLink(email) {
-    return new Promise((resolve) => {
-        setTimeout(() => {
-            resolve({ email, sent: true });
-        }, 1000);
-    });
-}
-
-// Note: simulateGoogleLogin removed - Google login now uses email from input field
-// In production, this would be replaced with real Google OAuth
-
-// ==========================================
-// SESSION MANAGEMENT
-// ==========================================
-
-/**
- * Create user session
- * @param {string} email - User email
- * @param {string} provider - Auth provider (magic-link, google)
- */
-function createSession(email, provider) {
-    const userId = generateUserId(email);
-    const expiresAt = Date.now() + SESSION_DURATION_MS;
-    
-    const user = {
-        id: userId,
-        email: email,
-        provider: provider,
-        createdAt: Date.now(),
-        expiresAt: expiresAt
-    };
-    
-    currentUser = user;
-    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
-    
-    showApp();
-}
-
-/**
- * Generate consistent user ID from email
- * @param {string} email - User email
- * @returns {string} User ID
- */
-function generateUserId(email) {
-    let hash = 0;
-    for (let i = 0; i < email.length; i++) {
-        const char = email.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash; // Convert to 32bit integer
+async function logout() {
+    try {
+        const supabase = window.supabaseClient;
+        
+        // Clear app state before logging out
+        if (typeof clearAppState === 'function') {
+            clearAppState();
+        }
+        
+        const { error } = await supabase.auth.signOut();
+        
+        if (error) {
+            console.error('Error signing out:', error);
+        }
+        
+        currentUser = null;
+        showLogin();
+        
+        // Clear login form
+        const emailInput = document.getElementById('login-email');
+        if (emailInput) emailInput.value = '';
+        
+        showLoginMessage('', '');
+        
+        // Reset app initialization flag
+        window.appInitialized = false;
+        
+    } catch (error) {
+        console.error('Error during logout:', error);
     }
-    return Math.abs(hash).toString(36);
-}
-
-/**
- * Logout user and clear session
- */
-function logout() {
-    // Clear app state before logging out
-    if (typeof clearAppState === 'function') {
-        clearAppState();
-    }
-    
-    currentUser = null;
-    localStorage.removeItem(AUTH_STORAGE_KEY);
-    
-    showLogin();
-    
-    // Clear login form
-    const emailInput = document.getElementById('login-email');
-    if (emailInput) emailInput.value = '';
-    
-    showLoginMessage('', '');
-    
-    // Reset app initialization flag
-    window.appInitialized = false;
 }
 
 // ==========================================
@@ -375,6 +338,14 @@ function getCurrentUserId() {
  */
 function isAuthenticated() {
     return currentUser !== null;
+}
+
+/**
+ * Get current user's email
+ * @returns {string|null}
+ */
+function getCurrentUserEmail() {
+    return currentUser ? currentUser.email : null;
 }
 
 // ==========================================
@@ -418,9 +389,9 @@ function setupLogoutListener() {
     const logoutBtn = document.getElementById('logout-btn');
     
     if (logoutBtn) {
-        logoutBtn.onclick = () => {
+        logoutBtn.onclick = async () => {
             if (confirm('¿Estás seguro de que quieres cerrar sesión?')) {
-                logout();
+                await logout();
             }
         };
     }
@@ -430,9 +401,9 @@ function setupLogoutListener() {
 // GLOBAL EXPORTS
 // ==========================================
 
-window.checkAuthState = checkAuthState;
 window.getCurrentUser = getCurrentUser;
 window.getCurrentUserId = getCurrentUserId;
+window.getCurrentUserEmail = getCurrentUserEmail;
 window.isAuthenticated = isAuthenticated;
 window.logout = logout;
 window.setupLogoutListener = setupLogoutListener;

@@ -13,11 +13,11 @@
 /** Current schema version for data format migrations */
 const SCHEMA_VERSION = 1;
 
-/** Backend API base URL */
-const API_BASE_URL = 'http://localhost:3000/api';
-
-/** Enable/disable cloud sync (set to false if backend is not running) */
+/** Enable/disable cloud sync */
 const ENABLE_CLOUD_SYNC = true;
+
+/** Storage bucket name in Supabase */
+const STORAGE_BUCKET = 'photos';
 
 // Track which photos have been synced to DB
 let syncedPhotoIds = new Set();
@@ -1348,11 +1348,11 @@ async function deleteSelectedPhotos() {
         return;
     }
     
-    // Delete from cloud database first
+    // Delete from cloud database and storage first
     const photosToDelete = photos.filter(photo => selectedPhotoIds.has(photo.id));
     for (const photo of photosToDelete) {
         if (photo.dbId) {
-            await deletePhotoFromCloud(photo.dbId);
+            await deletePhotoFromCloud(photo.dbId, photo.storagePath, photo.thumbPath);
         }
     }
     
@@ -1426,15 +1426,44 @@ function confirmDeleteAll() {
 
 /** Clear all photos from the application */
 async function clearAllPhotos() {
-    // Delete all from cloud database
+    // Delete all from cloud database and storage
     if (ENABLE_CLOUD_SYNC && isAuthenticated()) {
-        const userId = getCurrentUserId();
-        if (userId) {
+        const supabase = window.supabaseClient;
+        if (supabase) {
             try {
-                await fetch(`${API_BASE_URL}/photos?userId=${userId}&all=true`, {
-                    method: 'DELETE'
-                });
-                console.log('✅ All photos deleted from cloud');
+                const userId = getCurrentUserId();
+                
+                // First get all storage paths
+                const { data: photosToDelete } = await supabase
+                    .from('photos')
+                    .select('storage_path, thumb_path');
+
+                // Delete files from storage
+                if (photosToDelete && photosToDelete.length > 0) {
+                    const filesToDelete = [];
+                    photosToDelete.forEach(photo => {
+                        if (photo.storage_path) filesToDelete.push(photo.storage_path);
+                        if (photo.thumb_path) filesToDelete.push(photo.thumb_path);
+                    });
+
+                    if (filesToDelete.length > 0) {
+                        await supabase.storage
+                            .from(STORAGE_BUCKET)
+                            .remove(filesToDelete);
+                    }
+                }
+
+                // Delete all records from database
+                const { error } = await supabase
+                    .from('photos')
+                    .delete()
+                    .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all (workaround)
+
+                if (error) {
+                    console.warn('Database delete error:', error.message);
+                } else {
+                    console.log('✅ All photos deleted from cloud');
+                }
             } catch (error) {
                 console.warn('⚠️ Failed to delete from cloud:', error);
             }
@@ -1467,6 +1496,12 @@ async function syncPhotoToCloud(photo) {
         return;
     }
 
+    const supabase = window.supabaseClient;
+    if (!supabase) {
+        console.warn('Supabase not available');
+        return;
+    }
+
     const userId = getCurrentUserId();
     if (!userId) {
         console.warn('No user ID, skipping cloud sync');
@@ -1478,71 +1513,136 @@ async function syncPhotoToCloud(photo) {
         return;
     }
 
-    // Need file to upload
-    if (!photo.file && !photo.url) {
-        console.warn('No file or URL to upload for photo:', photo.id);
-        return;
-    }
-
     try {
-        const formData = new FormData();
-        
-        // Add file if available (prefer original file over dataURL)
-        if (photo.file) {
-            formData.append('file', photo.file);
-        } else if (photo.url && photo.url.startsWith('data:')) {
-            // Convert dataURL to Blob if needed
-            const response = await fetch(photo.url);
-            const blob = await response.blob();
-            const fileName = `photo-${photo.id}.jpg`;
-            formData.append('file', blob, fileName);
-        }
-        
-        // Add metadata
-        formData.append('userId', userId);
-        formData.append('location', photo.location || '');
-        formData.append('lat', photo.lat || '');
-        formData.append('lon', photo.lon || '');
-        formData.append('date', photo.date || 'Fecha desconocida');
-        formData.append('noteTitle', photo.noteTitle || '');
-        formData.append('noteDescription', photo.noteDescription || '');
-        formData.append('country', photo.country || '');
-        formData.append('countryCode', photo.countryCode || '');
+        let storagePath = null;
+        let thumbPath = null;
 
-        const response = await fetch(`${API_BASE_URL}/photos`, {
-            method: 'POST',
-            body: formData
-            // Don't set Content-Type header - browser will set it with boundary
-        });
+        // Upload file to Supabase Storage if available
+        if (photo.file || (photo.url && photo.url.startsWith('data:'))) {
+            let fileToUpload;
+            let fileName;
 
-        if (response.ok) {
-            const data = await response.json();
-            // Store the DB ID and storage info in the photo object
-            photo.dbId = data.id;
-            photo.storagePath = data.storagePath;
-            photo.thumbPath = data.thumbPath;
-            photo.imageUrl = data.imageUrl;
-            photo.thumbUrl = data.thumbUrl;
-            photo.hasImage = data.hasImage;
-            
-            // Cache the URLs
-            if (data.imageUrl) {
-                cacheUrl(photo.id, data.imageUrl, false);
+            if (photo.file) {
+                fileToUpload = photo.file;
+                fileName = `${Date.now()}-${photo.file.name || 'photo.jpg'}`;
+            } else {
+                // Convert dataURL to Blob
+                const response = await fetch(photo.url);
+                fileToUpload = await response.blob();
+                fileName = `${Date.now()}-photo.jpg`;
             }
-            if (data.thumbUrl) {
-                cacheUrl(photo.id, data.thumbUrl, true);
-            }
+
+            // Upload to user's folder in storage
+            storagePath = `${userId}/${fileName}`;
             
-            syncedPhotoIds.add(photo.id);
-            console.log(`✅ Photo uploaded to cloud: ${photo.id}`);
-        } else {
-            const errorText = await response.text();
-            console.warn(`⚠️ Failed to upload photo ${photo.id}:`, response.statusText, errorText);
+            const { error: uploadError } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .upload(storagePath, fileToUpload, {
+                    cacheControl: '3600',
+                    upsert: false
+                });
+
+            if (uploadError) {
+                console.warn('Storage upload error:', uploadError.message);
+                // Continue without storage - still save metadata
+                storagePath = null;
+            }
+
+            // Create thumbnail (smaller version)
+            if (storagePath && photo.url) {
+                try {
+                    const thumbBlob = await createThumbnail(photo.url);
+                    thumbPath = `${userId}/thumbs/${fileName}`;
+                    
+                    await supabase.storage
+                        .from(STORAGE_BUCKET)
+                        .upload(thumbPath, thumbBlob, {
+                            cacheControl: '3600',
+                            upsert: false
+                        });
+                } catch (thumbError) {
+                    console.warn('Thumbnail creation failed:', thumbError);
+                    thumbPath = null;
+                }
+            }
         }
+
+        // Insert metadata into database
+        const { data, error } = await supabase
+            .from('photos')
+            .insert({
+                user_id: userId,
+                location: photo.location || null,
+                lat: photo.lat || null,
+                lon: photo.lon || null,
+                date: photo.date || 'Fecha desconocida',
+                note_title: photo.noteTitle || '',
+                note_description: photo.noteDescription || '',
+                country: photo.country || null,
+                country_code: photo.countryCode || null,
+                storage_path: storagePath,
+                thumb_path: thumbPath
+            })
+            .select()
+            .single();
+
+        if (error) {
+            console.warn('Database insert error:', error.message);
+            return;
+        }
+
+        // Store the DB ID and storage info in the photo object
+        photo.dbId = data.id;
+        photo.storagePath = storagePath;
+        photo.thumbPath = thumbPath;
+        photo.hasImage = !!storagePath;
+
+        syncedPhotoIds.add(photo.id);
+        console.log(`✅ Photo uploaded to cloud: ${photo.id}`);
+
     } catch (error) {
-        console.warn('⚠️ Cloud upload error (backend may be offline):', error.message);
+        console.warn('⚠️ Cloud upload error:', error.message);
         // Don't throw - allow app to work offline
     }
+}
+
+/**
+ * Create a thumbnail from a data URL
+ * @param {string} dataUrl - Original image data URL
+ * @returns {Promise<Blob>} Thumbnail blob
+ */
+function createThumbnail(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = function() {
+            const canvas = document.createElement('canvas');
+            const maxSize = 200;
+            let width = img.width;
+            let height = img.height;
+
+            if (width > height) {
+                if (width > maxSize) {
+                    height = Math.round((height * maxSize) / width);
+                    width = maxSize;
+                }
+            } else {
+                if (height > maxSize) {
+                    width = Math.round((width * maxSize) / height);
+                    height = maxSize;
+                }
+            }
+
+            canvas.width = width;
+            canvas.height = height;
+
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+
+            canvas.toBlob(resolve, 'image/jpeg', 0.7);
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+    });
 }
 
 /**
@@ -1569,19 +1669,26 @@ async function getPhotoUrl(photo, useThumb = false) {
         return photo.imageUrl;
     }
     
-    // If photo has storage path but no URL, fetch it
-    if (photo.dbId) {
+    // If photo has storage path, get signed URL from Supabase
+    const storagePath = useThumb ? photo.thumbPath : photo.storagePath;
+    if (storagePath) {
         try {
-            const userId = getCurrentUserId();
-            const response = await fetch(
-                `${API_BASE_URL}/photos/${photo.dbId}/url?userId=${userId}&thumb=${useThumb}`
-            );
-            
-            if (response.ok) {
-                const data = await response.json();
-                cacheUrl(photo.id, data.url, useThumb);
-                return data.url;
+            const supabase = window.supabaseClient;
+            if (!supabase) {
+                return photo.url || null;
             }
+
+            const { data, error } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .createSignedUrl(storagePath, 3600); // 1 hour expiry
+
+            if (error) {
+                console.warn('Error getting signed URL:', error.message);
+                return photo.url || null;
+            }
+
+            cacheUrl(photo.id, data.signedUrl, useThumb);
+            return data.signedUrl;
         } catch (error) {
             console.warn('Error fetching signed URL:', error);
         }
@@ -1615,34 +1722,31 @@ async function updatePhotoInCloud(photo) {
         return;
     }
 
-    const userId = getCurrentUserId();
-    if (!userId) {
+    const supabase = window.supabaseClient;
+    if (!supabase) {
         return;
     }
 
     try {
-        const response = await fetch(`${API_BASE_URL}/photos/${photo.dbId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                userId: userId,
+        const { error } = await supabase
+            .from('photos')
+            .update({
                 location: photo.location || null,
                 lat: photo.lat || null,
                 lon: photo.lon || null,
                 date: photo.date || 'Fecha desconocida',
-                noteTitle: photo.noteTitle || '',
-                noteDescription: photo.noteDescription || '',
+                note_title: photo.noteTitle || '',
+                note_description: photo.noteDescription || '',
                 country: photo.country || null,
-                countryCode: photo.countryCode || null
+                country_code: photo.countryCode || null,
+                updated_at: new Date().toISOString()
             })
-        });
+            .eq('id', photo.dbId);
 
-        if (response.ok) {
-            console.log(`✅ Photo updated in cloud: ${photo.id}`);
+        if (error) {
+            console.warn(`⚠️ Failed to update photo ${photo.id}:`, error.message);
         } else {
-            console.warn(`⚠️ Failed to update photo ${photo.id}:`, response.statusText);
+            console.log(`✅ Photo updated in cloud: ${photo.id}`);
         }
     } catch (error) {
         console.warn('⚠️ Cloud update error:', error.message);
@@ -1650,29 +1754,48 @@ async function updatePhotoInCloud(photo) {
 }
 
 /**
- * Delete photo from cloud database
- * @param {number} dbId - Database ID
+ * Delete photo from cloud database and storage
+ * @param {string} dbId - Database ID
+ * @param {string} storagePath - Storage path (optional)
+ * @param {string} thumbPath - Thumbnail path (optional)
  * @returns {Promise<void>}
  */
-async function deletePhotoFromCloud(dbId) {
+async function deletePhotoFromCloud(dbId, storagePath = null, thumbPath = null) {
     if (!ENABLE_CLOUD_SYNC || !isAuthenticated() || !dbId) {
         return;
     }
 
-    const userId = getCurrentUserId();
-    if (!userId) {
+    const supabase = window.supabaseClient;
+    if (!supabase) {
         return;
     }
 
     try {
-        const response = await fetch(`${API_BASE_URL}/photos/${dbId}?userId=${userId}`, {
-            method: 'DELETE'
-        });
+        // Delete files from storage if paths provided
+        if (storagePath || thumbPath) {
+            const filesToDelete = [];
+            if (storagePath) filesToDelete.push(storagePath);
+            if (thumbPath) filesToDelete.push(thumbPath);
 
-        if (response.ok) {
-            console.log(`✅ Photo deleted from cloud: ${dbId}`);
+            const { error: storageError } = await supabase.storage
+                .from(STORAGE_BUCKET)
+                .remove(filesToDelete);
+
+            if (storageError) {
+                console.warn('Storage delete error:', storageError.message);
+            }
+        }
+
+        // Delete from database
+        const { error } = await supabase
+            .from('photos')
+            .delete()
+            .eq('id', dbId);
+
+        if (error) {
+            console.warn(`⚠️ Failed to delete photo ${dbId}:`, error.message);
         } else {
-            console.warn(`⚠️ Failed to delete photo ${dbId}:`, response.statusText);
+            console.log(`✅ Photo deleted from cloud: ${dbId}`);
         }
     } catch (error) {
         console.warn('⚠️ Cloud delete error:', error.message);
@@ -1688,24 +1811,44 @@ async function loadPhotosFromCloud() {
         return [];
     }
 
-    const userId = getCurrentUserId();
-    if (!userId) {
+    const supabase = window.supabaseClient;
+    if (!supabase) {
         return [];
     }
 
     try {
-        const response = await fetch(`${API_BASE_URL}/photos?userId=${userId}`);
-        
-        if (!response.ok) {
-            console.warn('⚠️ Failed to load photos from cloud:', response.statusText);
+        const { data, error } = await supabase
+            .from('photos')
+            .select('*')
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.warn('⚠️ Failed to load photos from cloud:', error.message);
             return [];
         }
 
-        const data = await response.json();
-        console.log(`📥 Loaded ${data.photos.length} photos from cloud`);
-        return data.photos || [];
+        // Transform DB fields to app format
+        const photos = (data || []).map(row => ({
+            id: row.id,
+            dbId: row.id,
+            location: row.location,
+            lat: row.lat,
+            lon: row.lon,
+            date: row.date,
+            noteTitle: row.note_title || '',
+            noteDescription: row.note_description || '',
+            country: row.country,
+            countryCode: row.country_code,
+            storagePath: row.storage_path,
+            thumbPath: row.thumb_path,
+            hasImage: !!row.storage_path,
+            url: null // Will be fetched on demand
+        }));
+
+        console.log(`📥 Loaded ${photos.length} photos from cloud`);
+        return photos;
     } catch (error) {
-        console.warn('⚠️ Cloud load error (backend may be offline):', error.message);
+        console.warn('⚠️ Cloud load error:', error.message);
         return [];
     }
 }

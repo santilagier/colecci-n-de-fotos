@@ -1,61 +1,118 @@
-# Nuestros Viajes - App de Mapa Interactivo
+# Recorrido por el Mundo - App de Viajes
 
-Una aplicación web elegante para visualizar tus fotos en un mapa del mundo basándose en sus datos GPS (metadata EXIF).
+Una aplicación web para visualizar tus fotos de viajes en un mapa del mundo, con sincronización en la nube.
 
-## 🎯 Características
+## ✨ Características
 
 - **Mapa Interactivo**: Navega por el mundo usando Leaflet con OpenStreetMap
-- **Detección Automática de Ubicación**: Lee automáticamente las coordenadas GPS de las fotos desde sus metadatos EXIF
-- **Nombres de Lugares**: Obtiene automáticamente los nombres de las ciudades y países usando geocodificación inversa
-- **Marcadores Inteligentes**: Agrupa fotos por ubicación y muestra el número de fotos en cada lugar
-- **Galería de Fotos**: Haz click en cualquier marcador para ver todas las fotos de esa ubicación
-- **Drag and Drop**: Arrastra fotos directamente al área de drop
-- **Persistencia Local**: Las fotos se guardan automáticamente en tu navegador y se cargan al volver
-- **Diseño Elegante**: Interfaz moderna con fondo negro, tipografía Space Grotesk y contornos cian
-- **Estadísticas**: Muestra el total de fotos, lugares y países visitados
+- **Detección Automática de Ubicación**: Lee las coordenadas GPS de las fotos desde sus metadatos EXIF
+- **Nombres de Lugares**: Obtiene automáticamente las ciudades y países usando geocodificación
+- **Notas y Recuerdos**: Añade títulos y descripciones a cada foto
+- **Sincronización en la Nube**: Tus fotos se sincronizan entre dispositivos
+- **Autenticación Real**: Login con Google o Magic Link (email)
+- **Galería por País**: Visualiza fotos organizadas por país
+- **Carrusel de Fotos**: Vista rápida de todas tus fotos
+- **Carrusel de Banderas**: Muestra las banderas de los países visitados
+- **Diseño Elegante**: Interfaz moderna con tema oscuro
 
-## 🚀 Cómo Usar
+## 🚀 Demo en Vivo
 
-1. Abre `index.html` en tu navegador (puedes hacer doble click o usar un servidor local)
-2. Haz click en "Cargar Fotos" o arrastra fotos al área de drop
-3. Selecciona una o más fotos que tengan datos GPS en sus metadatos
-4. Las fotos aparecerán automáticamente en el mapa como marcadores
-5. Haz click en cualquier marcador para ver las fotos de esa ubicación
-6. Haz click en una foto en la galería para verla en tamaño completo
-7. Usa "Ver Todas las Fotos" para centrar el mapa en todas las ubicaciones
+**URL**: (configurar después del deploy en Vercel)
 
-## 📋 Requisitos
+## 📋 Configuración
 
-- Un navegador moderno (Chrome, Firefox, Safari, Edge)
-- Fotos con datos GPS en sus metadatos EXIF (la mayoría de las fotos tomadas con smartphones tienen esta información)
-- Conexión a internet (para cargar las librerías y obtener nombres de lugares)
+### 1. Configurar Supabase
 
-## 💡 Notas
+La app usa [Supabase](https://supabase.com) para autenticación, base de datos y almacenamiento.
 
-- Las fotos deben tener datos GPS en sus metadatos EXIF para aparecer en el mapa
-- Si una foto no tiene datos GPS, se mostrará un mensaje en la consola del navegador
-- Las fotos se agrupan automáticamente por ubicación (coordenadas similares)
-- Todos los datos se procesan localmente en tu navegador - nada se sube a ningún servidor
-- Los nombres de lugares se obtienen de OpenStreetMap mediante geocodificación inversa
+1. Crea una cuenta gratis en [supabase.com](https://supabase.com)
+2. Sigue las instrucciones en `SUPABASE_SETUP.md`
+3. Copia tus claves en `js/supabase-config.js`
 
-## 🎨 Personalización
+### 2. Deploy en Vercel
 
-Puedes personalizar los colores y estilos editando las variables CSS en `styles.css`:
+La app se despliega fácilmente en [Vercel](https://vercel.com):
 
-```css
-:root {
-    --primary-color: #ffffff;
-    --secondary-color: #00d4ff;
-    --accent-color: #ff006e;
-    /* ... más variables */
-}
+1. Conecta tu repositorio de GitHub
+2. Vercel detectará automáticamente que es un sitio estático
+3. Sigue las instrucciones en `DEPLOY.md`
+
+### 3. Desarrollo Local
+
+```bash
+# Servir localmente (requiere Python 3)
+python -m http.server 8080
+
+# O con Node.js
+npx serve .
 ```
 
-## 📱 Responsive
+Luego abre http://localhost:8080
 
-La aplicación está completamente optimizada para dispositivos móviles y tablets.
+## 🏗️ Arquitectura
+
+```
+Frontend (Vercel)          Supabase
+┌─────────────────┐       ┌─────────────────┐
+│  index.html     │       │  Auth (Google,  │
+│  styles.css     │──────▶│  Magic Link)    │
+│  app.js         │       │                 │
+│  auth.js        │       │  PostgreSQL     │
+│                 │       │  (photos table) │
+│                 │       │                 │
+│                 │       │  Storage Bucket │
+│                 │       │  (photos/*)     │
+└─────────────────┘       └─────────────────┘
+```
+
+## 📁 Estructura del Proyecto
+
+```
+viajes-fran/
+├── index.html              # HTML principal
+├── styles.css              # Estilos
+├── app.js                  # Lógica principal
+├── auth.js                 # Autenticación con Supabase
+├── vercel.json             # Configuración de Vercel
+├── js/
+│   ├── supabase-config.js  # Configuración de Supabase
+│   ├── config.js           # Constantes de la app
+│   └── utils.js            # Utilidades
+├── SUPABASE_SETUP.md       # Guía de configuración Supabase
+├── DEPLOY.md               # Guía de deploy
+└── README.md               # Este archivo
+```
+
+## 🔐 Seguridad
+
+- **Row Level Security (RLS)**: Cada usuario solo ve sus propias fotos
+- **Autenticación OAuth**: Login seguro con Google
+- **Storage Privado**: Las fotos se almacenan en bucket privado
+- **URLs Firmadas**: Acceso temporal a imágenes
+
+## 📱 Uso
+
+1. **Iniciar Sesión**: Usa Google o Magic Link
+2. **Cargar Fotos**: Arrastra o selecciona fotos con GPS
+3. **Ver en Mapa**: Las fotos aparecen en sus ubicaciones
+4. **Añadir Notas**: Click en una foto para añadir título/descripción
+5. **Explorar**: Navega por el mapa o usa los carruseles
+
+## 🛠️ Tecnologías
+
+- **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
+- **Mapa**: Leaflet.js + OpenStreetMap
+- **Metadatos EXIF**: exif-js
+- **Backend**: Supabase (Auth, PostgreSQL, Storage)
+- **Hosting**: Vercel
+
+## 💡 Tips
+
+- Las fotos deben tener datos GPS en sus metadatos EXIF
+- La mayoría de fotos de smartphones tienen GPS activado
+- Fotos sin GPS pueden asignarse manualmente a una ciudad
+- Usa el backup (Ajustes → Exportar) para respaldar tus datos
 
 ---
 
 Hecho con ❤️ para Fran
-

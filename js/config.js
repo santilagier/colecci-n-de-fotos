@@ -12,10 +12,11 @@ export const APP_VERSION = '1.0.0';
 export const APP_NAME = 'Viajes Fran';
 
 // ==========================================
-// API CONFIGURATION
+// SUPABASE CONFIGURATION
 // ==========================================
-export const API_BASE_URL = 'http://localhost:3000/api';
+// Note: Actual Supabase credentials are in js/supabase-config.js
 export const ENABLE_CLOUD_SYNC = true;
+export const STORAGE_BUCKET = 'photos';
 
 // ==========================================
 // SCHEMA & DATA
