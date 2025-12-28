@@ -12,8 +12,8 @@
  */
 
 // ⚠️ IMPORTANTE: Reemplaza estos valores con los de tu proyecto Supabase
-const SUPABASE_URL = 'https://tu-proyecto.supabase.co';
-const SUPABASE_ANON_KEY = 'tu-anon-key-aqui';
+   const SUPABASE_URL = 'https://yjpmcifypvtiakqkeayo.supabase.co';
+   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlqcG1jaWZ5cHZ0aWFrcWtlYXlvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY4NjM3MjAsImV4cCI6MjA4MjQzOTcyMH0.s0ijeJZVpmlKrPOHTjgGbuIH-O3vaIPoVJYNIBccemk';
 
 // Validar configuración
 if (SUPABASE_URL === 'https://tu-proyecto.supabase.co' || SUPABASE_ANON_KEY === 'tu-anon-key-aqui') {
